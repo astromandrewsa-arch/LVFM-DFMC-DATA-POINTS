@@ -1,0 +1,12 @@
+# Raw downloads and gridded rasters are recreated by scripts/fetch_*.py
+data/raw/
+!data/raw/.gitkeep
+__pycache__/
+*.pyc
+.env
+.cdsapirc
+.netrc
+*.nc
+*.grib
+*.tif
+.cache/
