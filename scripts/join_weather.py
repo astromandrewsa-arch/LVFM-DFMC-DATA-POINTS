@@ -139,10 +139,11 @@ def gridmet_year(y: int) -> pd.DataFrame | None:
             d = pd.read_parquet(p).rename(columns={v: name})
             ll = d["site_key"].str.split(",", expand=True).astype(float)
             d["gm_cell"] = gm_cell(ll[0], ll[1]).values
-            d = d.drop(columns="site_key").drop_duplicates(["gm_cell", "date"]).set_index(["gm_cell", "date"])
-            cols = d if cols is None else cols.join(d, how="outer")
+            d[name] = d[name].astype("float32")
+            d = d.drop(columns="site_key").drop_duplicates(["gm_cell", "date"]).set_index(["gm_cell", "date"])[name]
+            cols = [d] if cols is None else cols + [d]
         if cols is not None:
-            frames.append(cols.reset_index())
+            frames.append(pd.concat(cols, axis=1).reset_index())
     df = pd.concat(frames, ignore_index=True)
     for c in ("gm_tmax_c", "gm_tmin_c"):
         df[c] = df[c] - 273.15
@@ -239,6 +240,10 @@ def main():
                 if ns_cache[y] is not None:
                     g = attach_nearest(g, ns_map, ns_cache[y])
             res.append(g)
+            # keep only the current year's grids in memory (long single-source files span decades)
+            for cache in (pw_cache, gm_cache, ns_cache):
+                for k in [k for k in cache if k != y]:
+                    cache.pop(k)
         w = pd.concat(res, ignore_index=True)
         sc = source_covariates(sid, part)
         if sc is not None:
