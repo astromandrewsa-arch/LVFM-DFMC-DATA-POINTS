@@ -100,6 +100,14 @@ GM_VARS = {"pr": "_p", "tmmx": "gm_tmax_c", "tmmn": "gm_tmin_c", "rmax": "gm_rh_
            "vpd": "gm_vpd_kpa", "fm100": "gm_fm100_pct", "fm1000": "gm_fm1000_pct"}
 
 
+def gm_cell(lat, lon) -> pd.Series:
+    """gridMET 1/24-deg cell id 'row_col' (grid origin 49.4N, 124.7667W)."""
+    lat, lon = np.asarray(lat, float), np.asarray(lon, float)
+    r = np.round((49.4 - lat) * 24).astype(int)
+    c = np.round((lon + 124.7666667) * 24).astype(int)
+    return pd.Series(r.astype(str)) + "_" + pd.Series(c.astype(str))
+
+
 def gridmet_year(y: int) -> pd.DataFrame | None:
     out = GM_DERIVED / f"{y}.parquet"
     need = [GM_RAW / f"{v}_{yy}.parquet" for v in GM_VARS for yy in (y,)]
@@ -115,7 +123,10 @@ def gridmet_year(y: int) -> pd.DataFrame | None:
             if not p.exists():
                 cols = None
                 break
-            d = pd.read_parquet(p).rename(columns={v: name}).set_index(["site_key", "date"])
+            d = pd.read_parquet(p).rename(columns={v: name})
+            ll = d["site_key"].str.split(",", expand=True).astype(float)
+            d["gm_cell"] = gm_cell(ll[0], ll[1]).values
+            d = d.drop(columns="site_key").drop_duplicates(["gm_cell", "date"]).set_index(["gm_cell", "date"])
             cols = d if cols is None else cols.join(d, how="outer")
         if cols is not None:
             frames.append(cols.reset_index())
@@ -123,7 +134,7 @@ def gridmet_year(y: int) -> pd.DataFrame | None:
     for c in ("gm_tmax_c", "gm_tmin_c"):
         df[c] = df[c] - 273.15
     df["gm_tmean_c"] = (df["gm_tmax_c"] + df["gm_tmin_c"]) / 2
-    df = add_precip_features(df, "site_key", "_p", "gm_").drop(columns="_p")
+    df = add_precip_features(df, "gm_cell", "_p", "gm_").drop(columns="_p")
     df = df[df["date"].dt.year == y]
     GM_DERIVED.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False, compression="zstd")
@@ -165,6 +176,7 @@ def main():
         o["site_key"] = site_key(o["lat"].values, o["lon"].values).values
         o["date"] = pd.to_datetime(o["date"])
         o = o.merge(sites, on="site_key", how="left")
+        o["gm_cell"] = gm_cell(o["lat"], o["lon"]).values
         o["year"] = o["date"].dt.year
         res = []
         for y, g in o.groupby("year"):
@@ -178,7 +190,7 @@ def main():
                 if y not in gm_cache:
                     gm_cache[y] = gridmet_year(y)
                 if gm_cache[y] is not None:
-                    g = g.merge(gm_cache[y], on=["site_key", "date"], how="left")
+                    g = g.merge(gm_cache[y], on=["gm_cell", "date"], how="left")
             res.append(g)
         w = pd.concat(res, ignore_index=True)
         sc = source_covariates(sid, part)
@@ -186,7 +198,7 @@ def main():
             w = w.merge(sc, on="observation_id", how="left")
         if terrain is not None:
             w = w.merge(terrain, on="site_key", how="left")
-        w = w.drop(columns=["lat", "lon", "date", "country", "year", "in_conus"])
+        w = w.drop(columns=["lat", "lon", "date", "country", "year", "in_conus", "gm_cell"])
         w["has_power"] = w.filter(like="pw_tmean").notna().any(axis=1) if "pw_tmean_c" in w else False
         w["has_gridmet"] = w["gm_tmax_c"].notna() if "gm_tmax_c" in w else False
         w["has_source_weather"] = w.filter(regex="^src_(obs_temp_c|tmean_c)$").notna().any(axis=1)

@@ -34,7 +34,10 @@ if __name__ == "__main__":
     df = df.merge(sites, on="SiteId", how="left")
     ts = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
     print("UTC hours:", ts.dt.hour.value_counts().head(5).to_dict())
-    local_date = ts.dt.tz_convert("America/Chicago").dt.date
+    # 05:00Z/06:00Z = local midnight stored in US Central time -> take the Central date;
+    # other hours (00Z, 12Z, 18Z; mostly recent entries) -> take the UTC date as stored.
+    central = ts.dt.hour.isin([5, 6])
+    local_date = ts.dt.tz_convert("America/Chicago").dt.date.where(central, ts.dt.date)
 
     cat = df["category"].str.strip().str.lower()
     ftr = df["fuel_type_raw"].str.strip()
@@ -46,7 +49,8 @@ if __name__ == "__main__":
 
     notes = ("category=" + df["category"].fillna("") + "; state=" + df["stateName"].fillna("")
              + "; gacc_area=" + df["areaName"].fillna("") + "; group=" + df["groupName"].fillna("")
-             + "; site_elev_ft=" + df["elevation"].astype(str) + "; status=" + df["status"].fillna(""))
+             + "; site_elev_ft=" + df["elevation"].astype(str) + "; status=" + df["status"].fillna("")
+             + "; raw_ts=" + df["datetime"].fillna(""))
     sub = df["sub_category"].fillna("")
     notes = notes.where(sub == "", notes + "; sub_category=" + sub)
     meth = df["method_raw"].fillna("")

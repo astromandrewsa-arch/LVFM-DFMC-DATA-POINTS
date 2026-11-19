@@ -7,8 +7,9 @@ large sources) so every file stays under GitHub's 100 MB limit. Read it as one t
 
 De-duplication (rows are kept but flagged 'duplicate_of=<observation_id>'):
   Sources compiled from others (e.g. Globe-LFMC includes NFMD, ONF, Catalonia data) are matched
-  against more original sources on: location within ~0.01 deg (about 1 km), same date, same
-  fuel_class, same normalized species, and moisture within 1 percentage point (or 1 % relative).
+  one-to-one against more original sources on: location within ~0.01 deg (about 1 km), same date,
+  same fuel_class, and moisture within 1 percentage point (or 1 % relative). Species is not used
+  because compilations rename species.
   The row from the source with the lowest SOURCE_PRIORITY number (most original) is kept
   unflagged; the duplicate links are also written to data/normalized/duplicates.parquet.
 """
@@ -36,35 +37,44 @@ DEDUPE_SOURCES_EXCLUDE = {"madis_raws"}
 OUT = NORM / "observations.parquet"
 
 
-def norm_species(s: pd.Series) -> pd.Series:
-    return (s.fillna("").str.lower().str.replace(r"[^a-z ]", "", regex=True)
-             .str.split().str[:2].str.join(" "))
+def _key(df: pd.DataFrame) -> pd.Series:
+    return (df["lat"].round(2).astype(str) + "|" + df["lon"].round(2).astype(str) + "|"
+            + df["date"].astype(str) + "|" + df["fuel_class"].astype(str))
 
 
 def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One-to-one matching, most original source first.
+
+    Rows of a lower-priority (more compiled) source are matched to already-kept rows on
+    (lat, lon rounded to 0.01 deg, date, fuel_class) with |moisture difference| <= max(1, 1 %).
+    Species is not used because compilations rename species (e.g. Latin vs common names).
+    Each kept row absorbs at most one duplicate per source; closest values match first.
+    """
     df = df.copy()
     df["_prio"] = df["source_id"].map(SOURCE_PRIORITY).fillna(DEFAULT_PRIORITY)
-    df["_key"] = (df["lat"].round(2).astype(str) + "|" + df["lon"].round(2).astype(str) + "|"
-                  + df["date"].astype(str) + "|" + df["fuel_class"].astype(str) + "|"
-                  + norm_species(df["species"].astype("string")))
+    df["_key"] = _key(df)
     links = []
-    multi = df[df.duplicated("_key", keep=False)]
-    for key, g in multi.groupby("_key", sort=False):
-        if g["source_id"].nunique() < 2:
-            continue
-        g = g.sort_values("_prio")
-        keep_rows = g[g["_prio"] == g["_prio"].iloc[0]]
-        for idx, r in g[g["_prio"] > g["_prio"].iloc[0]].iterrows():
-            diff = (keep_rows["moisture_pct"] - r["moisture_pct"]).abs()
-            tol = np.maximum(1.0, 0.01 * keep_rows["moisture_pct"].abs())
-            m = keep_rows[diff <= tol]
-            if len(m):
-                links.append((r["observation_id"], m["observation_id"].iloc[0], r["source_id"], m["source_id"].iloc[0]))
-    links = pd.DataFrame(links, columns=["observation_id", "duplicate_of", "source_id", "kept_source_id"])
+    levels = sorted(df["_prio"].unique())
+    pool = df[df["_prio"] == levels[0]][["observation_id", "source_id", "_key", "moisture_pct"]]
+    for lv in levels[1:]:
+        for sid in sorted(df.loc[df["_prio"] == lv, "source_id"].unique()):
+            cand_rows = df[(df["source_id"] == sid)][["observation_id", "source_id", "_key", "moisture_pct"]]
+            m = cand_rows.merge(pool[pool["source_id"] != sid], on="_key", suffixes=("", "_kept"))
+            m["diff"] = (m["moisture_pct"] - m["moisture_pct_kept"]).abs()
+            tol = np.maximum(1.0, 0.01 * m["moisture_pct_kept"].abs())
+            m = m[m["diff"] <= tol].sort_values("diff")
+            m = m.drop_duplicates("observation_id").drop_duplicates("observation_id_kept")
+            links.append(m[["observation_id", "observation_id_kept", "source_id", "source_id_kept", "diff"]])
+            unmatched = cand_rows[~cand_rows["observation_id"].isin(m["observation_id"])]
+            pool = pd.concat([pool, unmatched], ignore_index=True)
+    links = (pd.concat(links, ignore_index=True) if links else pd.DataFrame(
+        columns=["observation_id", "observation_id_kept", "source_id", "source_id_kept", "diff"]))
+    links = links.rename(columns={"observation_id_kept": "duplicate_of", "source_id_kept": "kept_source_id"})
     if len(links):
         lk = links.set_index("observation_id")["duplicate_of"]
         mask = df["observation_id"].isin(lk.index)
-        df.loc[mask, "qa_flag"] = add_flag(df["qa_flag"], mask, "duplicate_of=")[mask] + df.loc[mask, "observation_id"].map(lk)
+        flagged = add_flag(df["qa_flag"], mask, "duplicate_of=")
+        df.loc[mask, "qa_flag"] = flagged[mask] + df.loc[mask, "observation_id"].map(lk)
     return df.drop(columns=["_prio", "_key"]), links
 
 
