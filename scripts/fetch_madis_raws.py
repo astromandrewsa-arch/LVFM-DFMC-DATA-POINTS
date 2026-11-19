@@ -37,7 +37,7 @@ NUM_VARS = ["latitude", "longitude", "elevation", "observationTime", "fuelMoistu
 def _arr(ds, v, idx):
     if v not in ds.variables:
         return np.full(len(idx), np.nan)
-    a = ds[v][:]
+    a = ds[v][:]  # full read of a 1-D numeric var is fast
     a = np.ma.filled(a.astype("float64"), np.nan)[idx]
     a[(a <= -9999) | (a > 1e30)] = np.nan
     return a
@@ -50,30 +50,28 @@ def extract(day: date, hour: int, out_root) -> tuple[str, int]:
         return str(out), -1
     url = BASE.format(y=y, m=m, d=d, h=h)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=out_root) as td:
-        gz = os.path.join(td, "f.gz")
-        try:
-            download(url, __import__("pathlib").Path(gz), sess=session(), timeout=180)
-        except Exception as e:  # missing hour in archive
+    try:
+        r = session().get(url, timeout=180)
+        r.raise_for_status()
+    except Exception as e:  # missing hour in archive
+        if getattr(getattr(e, "response", None), "status_code", None) == 404:
             pd.DataFrame().to_parquet(out)
-            return f"{url} ERR {e}", 0
-        nc = os.path.join(td, "f.nc")
-        with gzip.open(gz, "rb") as fi, open(nc, "wb") as fo:
-            while chunk := fi.read(1 << 22):
-                fo.write(chunk)
-        ds = netCDF4.Dataset(nc)
-        if "fuelMoisture" not in ds.variables:
-            pd.DataFrame().to_parquet(out)
-            return url, 0
-        fm = np.ma.filled(ds["fuelMoisture"][:].astype("float64"), np.nan)
-        idx = np.where(np.isfinite(fm) & (fm > -9999) & (fm < 1e30))[0]
-        rec = {}
-        for v in STR_VARS:
-            if v in ds.variables:
-                rec[v] = netCDF4.chartostring(ds[v][:])[idx]
-        for v in NUM_VARS:
-            rec[v] = _arr(ds, v, idx)
-        ds.close()
+        return f"{url} ERR {e}", 0
+    ds = netCDF4.Dataset("mem", memory=gzip.decompress(r.content))
+    if "fuelMoisture" not in ds.variables:
+        pd.DataFrame().to_parquet(out)
+        return url, 0
+    fm = np.ma.filled(ds["fuelMoisture"][:].astype("float64"), np.nan)
+    idx = np.where(np.isfinite(fm) & (fm > -9999) & (fm < 1e30))[0]
+    rec = {}
+    lo, hi = (int(idx.min()), int(idx.max()) + 1) if len(idx) else (0, 0)
+    for v in STR_VARS:
+        if v in ds.variables:
+            block = ds[v][lo:hi]  # contiguous slice covering only the fuel-moisture rows
+            rec[v] = netCDF4.chartostring(block, encoding="latin-1")[idx - lo]
+    for v in NUM_VARS:
+        rec[v] = _arr(ds, v, idx)
+    ds.close()
     df = pd.DataFrame(rec)
     df["archive_url"] = url
     df.to_parquet(out, index=False)

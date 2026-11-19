@@ -73,8 +73,12 @@ def make_obs_id(source_id: str, *parts) -> str:
     return f"{source_id}:{h}"
 
 
-def finalize(df: pd.DataFrame, source_id: str, *, estimates: bool = False) -> Path:
-    """Coerce to the observation schema and write by-source parquet."""
+def finalize(df: pd.DataFrame, source_id: str, *, estimates: bool = False,
+             part: str | None = None) -> Path:
+    """Coerce to the observation schema and write by-source parquet.
+
+    With part=..., writes by_source/<source_id>/<part>.parquet (for sources too large for one
+    file under GitHub's 100 MB limit)."""
     df = df.copy()
     for c in OBS_COLUMNS:
         if c not in df.columns:
@@ -95,8 +99,10 @@ def finalize(df: pd.DataFrame, source_id: str, *, estimates: bool = False) -> Pa
         ]
     df = df[OBS_COLUMNS]
     out_dir = EST_BY_SOURCE if estimates else BY_SOURCE
+    if part is not None:
+        out_dir = out_dir / source_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{source_id}.parquet"
-    df.to_parquet(out, index=False)
+    out = out_dir / (f"{part}.parquet" if part is not None else f"{source_id}.parquet")
+    df.to_parquet(out, index=False, compression="zstd")
     print(f"wrote {len(df):,} rows -> {out.relative_to(ROOT)}")
     return out
