@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from common import BY_SOURCE, NORM, OBS_COLUMNS
+from common import BY_SOURCE, EST_BY_SOURCE, NORM, OBS_COLUMNS
 from qa import add_flag, apply_qa, is_clean
 
 # Lower = more original. Compilations get higher numbers.
@@ -35,11 +35,49 @@ DEFAULT_PRIORITY = 10
 DEDUPE_SOURCES_EXCLUDE = {"madis_raws"}
 
 OUT = NORM / "observations.parquet"
+EST_OUT = NORM / "remote_sensing_estimates.parquet"
+
+
+def build_estimates():
+    """Estimates (remote sensing and model outputs; measured=False) -> separate dataset dir."""
+    if EST_OUT.exists():
+        shutil.rmtree(EST_OUT)
+    EST_OUT.mkdir(parents=True)
+    n = 0
+    for f in sorted(glob.glob(str(EST_BY_SOURCE / "*.parquet")) + glob.glob(str(EST_BY_SOURCE / "*" / "*.parquet"))):
+        p = Path(f)
+        name = p.stem if p.parent == EST_BY_SOURCE else f"{p.parent.name}-{p.stem}"
+        g = apply_qa(pd.read_parquet(f))[OBS_COLUMNS]
+        g["measured"] = False
+        g.to_parquet(EST_OUT / f"{name}.parquet", index=False, compression="zstd")
+        n += len(g)
+    print("estimate rows", n)
 
 
 def _key(df: pd.DataFrame) -> pd.Series:
-    return (df["lat"].round(2).astype(str) + "|" + df["lon"].round(2).astype(str) + "|"
-            + df["date"].astype(str) + "|" + df["fuel_class"].astype(str))
+    k = (df["lat"].round(2).astype(str) + "|" + df["lon"].round(2).astype(str) + "|"
+         + df["date"].astype(str) + "|" + df["fuel_class"].astype(str))
+    # rows without date/coordinates/value never match anything
+    bad = df["date"].isna() | df["lat"].isna() | df["lon"].isna() | df["moisture_pct"].isna()
+    return k.where(~bad, "nomatch|" + df["observation_id"].astype(str))
+
+
+ALT_VALUE_PATTERNS = [r"INRA_robust_mean=([0-9.]+)", r"ONF_mean_FFSLFMC=([0-9.]+)"]
+
+
+def _with_alt_values(rows: pd.DataFrame) -> pd.DataFrame:
+    """Kept rows plus extra copies carrying alternative values a compilation may have used
+    (e.g. ONF replicate rows carry the site-species-date means that Globe-LFMC stores)."""
+    base = rows[["observation_id", "source_id", "_key", "moisture_pct"]]
+    out = [base]
+    notes = rows["notes"].fillna("")
+    for pat in ALT_VALUE_PATTERNS:
+        v = pd.to_numeric(notes.str.extract(pat)[0], errors="coerce")
+        if v.notna().any():
+            alt = base[v.notna().values].copy()
+            alt["moisture_pct"] = v[v.notna()].values
+            out.append(alt)
+    return pd.concat(out, ignore_index=True)
 
 
 def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -55,7 +93,7 @@ def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     df["_key"] = _key(df)
     links = []
     levels = sorted(df["_prio"].unique())
-    pool = df[df["_prio"] == levels[0]][["observation_id", "source_id", "_key", "moisture_pct"]]
+    pool = _with_alt_values(df[df["_prio"] == levels[0]])
     for lv in levels[1:]:
         for sid in sorted(df.loc[df["_prio"] == lv, "source_id"].unique()):
             cand_rows = df[(df["source_id"] == sid)][["observation_id", "source_id", "_key", "moisture_pct"]]
@@ -64,8 +102,9 @@ def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             tol = np.maximum(1.0, 0.01 * m["moisture_pct_kept"].abs())
             m = m[m["diff"] <= tol].sort_values("diff")
             m = m.drop_duplicates("observation_id").drop_duplicates("observation_id_kept")
+            m = m.drop_duplicates("observation_id")
             links.append(m[["observation_id", "observation_id_kept", "source_id", "source_id_kept", "diff"]])
-            unmatched = cand_rows[~cand_rows["observation_id"].isin(m["observation_id"])]
+            unmatched = _with_alt_values(df[(df["source_id"] == sid) & ~df["observation_id"].isin(m["observation_id"])])
             pool = pd.concat([pool, unmatched], ignore_index=True)
     links = (pd.concat(links, ignore_index=True) if links else pd.DataFrame(
         columns=["observation_id", "observation_id_kept", "source_id", "source_id_kept", "diff"]))
@@ -124,3 +163,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    build_estimates()

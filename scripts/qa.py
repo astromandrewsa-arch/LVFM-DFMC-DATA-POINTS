@@ -7,7 +7,8 @@ Flags:
   negative_value         -999 < value < 0
   dead_below_1pct        dead fuel < 1 %
   dead_above_40pct       dead fuel > 40 % (possible only when saturated; check rain)
-  dead_implausible       dead fuel > 250 %
+  dead_implausible       dead fuel > 250 % (fine dead fuels) or > 1000 % (organic: duff, peat, moss, litter)
+  organic_above_250pct   duff/peat/moss/litter between 250 and 1000 % (possible when wet; soft flag)
   live_below_30pct       live fuel < 30 % (cured or dead material, or a fraction-vs-percent error)
   live_above_400pct      live fuel > 400 %
   live_implausible       live fuel > 1000 %
@@ -21,6 +22,9 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+
+
+ORGANIC = {"duff", "peat", "moss", "litter", "organic"}
 
 
 def add_flag(cur: pd.Series, mask, flag: str) -> pd.Series:
@@ -42,8 +46,11 @@ def apply_qa(df: pd.DataFrame) -> pd.DataFrame:
     q = add_flag(q, v <= -999, "sensor_error_code")
     q = add_flag(q, (v > -999) & (v < 0), "negative_value")
     q = add_flag(q, dead & (v >= 0) & (v < 1), "dead_below_1pct")
-    q = add_flag(q, dead & (v > 40) & (v <= 250), "dead_above_40pct")
-    q = add_flag(q, dead & (v > 250), "dead_implausible")
+    organic = df["fuel_type"].isin(ORGANIC).to_numpy()
+    q = add_flag(q, dead & ~organic & (v > 40) & (v <= 250), "dead_above_40pct")
+    q = add_flag(q, dead & ~organic & (v > 250), "dead_implausible")
+    q = add_flag(q, dead & organic & (v > 250) & (v <= 1000), "organic_above_250pct")
+    q = add_flag(q, dead & organic & (v > 1000), "dead_implausible")
     q = add_flag(q, live & (v >= 0) & (v < 30), "live_below_30pct")
     q = add_flag(q, live & (v > 400) & (v <= 1000), "live_above_400pct")
     q = add_flag(q, live & (v > 1000), "live_implausible")

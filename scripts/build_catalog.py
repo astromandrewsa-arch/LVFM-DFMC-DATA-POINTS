@@ -70,20 +70,25 @@ CORE_SOURCES = [
 ]
 
 
+def _rng(n):
+    d = pd.to_datetime(n["date"], errors="coerce")
+    return (len(n), d.min().date() if d.notna().any() else None, d.max().date() if d.notna().any() else None)
+
+
 def counts():
     out = {}
     for f in glob.glob(str(BY_SOURCE / "*.parquet")):
         n = pd.read_parquet(f, columns=["date"])
-        out[f.rsplit("/", 1)[-1][:-8]] = (len(n), n["date"].min(), n["date"].max())
-    for d in glob.glob(str(BY_SOURCE / "*/")):
+        out[f.rsplit("/", 1)[-1][:-8]] = _rng(n)
+    for d in glob.glob(str(BY_SOURCE) + "/*/"):
         sid = d.rstrip("/").rsplit("/", 1)[-1]
         parts = [pd.read_parquet(f, columns=["date"]) for f in glob.glob(d + "*.parquet")]
         if parts:
             n = pd.concat(parts)
-            out[sid] = (len(n), n["date"].min(), n["date"].max())
+            out[sid] = _rng(n)
     for f in glob.glob(str(EST_BY_SOURCE / "*.parquet")):
         n = pd.read_parquet(f, columns=["date"])
-        out[f.rsplit("/", 1)[-1][:-8]] = (len(n), n["date"].min(), n["date"].max())
+        out[f.rsplit("/", 1)[-1][:-8]] = _rng(n)
     return out
 
 
@@ -100,7 +105,7 @@ def main():
     cnt = counts()
     for sid, (n, d0, d1) in cnt.items():
         m = src.source_id == sid
-        src.loc[m, "records"] = n
+        src.loc[m, "records"] = str(n)
         src.loc[m, "date_range"] = f"{d0}..{d1}"
     src.to_csv(CATALOG / "sources.csv", index=False)
     print(len(src), "sources")
