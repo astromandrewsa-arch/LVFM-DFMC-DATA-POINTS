@@ -93,8 +93,9 @@ Full tables (by source, country, decade, weather coverage, licensing) are regene
   Australia 7k, Italy 2.6k, Israel 2.2k, Portugal 1.1k, South Africa 950, Türkiye 689, Tunisia 449,
   China 264, Argentina 241, Senegal 96 (+ 2.7k mesonet rows just outside US borders).
 - **Weather covariates:** 14,140,857 of 14,143,310 rows (100.0 %) have at least one weather set.
-  NASA POWER covers every dated row from 1981 on; gridMET covers 93 % of US rows; nearest station
-  covers 90 % of non-MADIS rows; MADIS rows carry their own co-located station weather.
+  NASA POWER covers every dated row from 1981 on; gridMET covers 98.8 % of dated CONUS rows from
+  1979 on; nearest station covers 88.7 % of non-MADIS rows; MADIS rows carry their own co-located
+  station weather.
   **ERA5-Land is not yet attached anywhere** (needs a CDS key).
 - **Estimates (kept separate):** 90.8M NFDRS 2016 modeled dead/live fuel moisture rows at 2,088 RAWS
   (git-ignored, reproducible). No remote-sensing LFMC product sampled yet.
