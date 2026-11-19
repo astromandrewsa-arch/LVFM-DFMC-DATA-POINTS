@@ -15,3 +15,7 @@ __pycache__/
 # scripts/fetch_fems_nfdrs.py + scripts/normalize_fems_nfdrs.py + build_observations.py
 data/normalized/estimates_by_source/fems_nfdrs/
 data/normalized/remote_sensing_estimates.parquet/fems_nfdrs-*.parquet
+
+# MADIS weather-join parts (~1 GB, 13M rows): reproducible with scripts/join_weather.py.
+# MADIS co-located station weather itself is committed in data/normalized/covariates_by_source/madis_raws/.
+data/normalized/weather_join.parquet/madis_raws-*.parquet
