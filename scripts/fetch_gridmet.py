@@ -25,12 +25,12 @@ VARS = ["pr", "tmmx", "tmmn", "rmax", "rmin", "vs", "th", "srad", "vpd", "fm100"
 URL = "https://www.northwestknowledge.net/metdata/data/{v}_{y}.nc"
 
 
-def extract(v: str, y: int, sites: pd.DataFrame, root):
-    out = root / "extracted" / f"{v}_{y}.parquet"
+def extract(v: str, y: int, sites: pd.DataFrame, root, subdir: str = "extracted"):
+    out = root / subdir / f"{v}_{y}.parquet"
     if out.exists():
         return v, y, -1
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = root / f"{v}_{y}.nc"
+    tmp = root / f"{v}_{y}_{subdir}.nc"
     download(URL.format(v=v, y=y), tmp, sess=session(), timeout=900)
     try:
         ds = netCDF4.Dataset(tmp)
@@ -70,14 +70,29 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--years", default=f"1979-{date.today().year}")
+    ap.add_argument("--topup", default="", help="name of a top-up pass: extract only sites whose "
+                    "gridMET cell is not yet in any extracted*/ folder, into extracted_<name>/")
     a = ap.parse_args()
     y0, y1 = map(int, a.years.split("-"))
     sites = pd.read_parquet(NORM / "sites.parquet")
     sites = sites[sites.in_conus].reset_index(drop=True)
     root = raw_dir(SOURCE_ID)
+    subdir = "extracted"
+    if a.topup:
+        import glob
+        from join_weather import gm_cell
+        have = set()
+        for f in glob.glob(str(root / "extracted*" / "pr_2020.parquet")):
+            k = pd.read_parquet(f, columns=["site_key"])["site_key"].unique()
+            ll = pd.Series(k).str.split(",", expand=True).astype(float)
+            have |= set(gm_cell(ll[0], ll[1]))
+        cells = gm_cell(sites.lat, sites.lon).values
+        sites = sites[~pd.Series(cells).isin(have).values].drop_duplicates("site_key").reset_index(drop=True)
+        subdir = f"extracted_{a.topup}"
+        print(len(sites), "sites need a top-up ->", subdir)
     jobs = [(v, y) for y in range(y1, y0 - 1, -1) for v in VARS]
     with ProcessPoolExecutor(a.workers) as ex:
-        futs = {ex.submit(extract, v, y, sites, root): (v, y) for v, y in jobs}
+        futs = {ex.submit(extract, v, y, sites, root, subdir): (v, y) for v, y in jobs}
         for f in as_completed(futs):
             try:
                 print(*f.result(), flush=True)

@@ -27,7 +27,11 @@ if __name__ == "__main__":
     try:
         w = pd.read_csv(NORM / "weather_join_coverage.csv")
         w["source"] = w["file"].str.split("-").str[0]
-        w = w.groupby("source")[["rows", "has_power", "has_gridmet", "has_source_weather"]].sum().reset_index()
+        w = w.groupby("source")[["rows", "has_power", "has_gridmet", "has_source_weather",
+                                       "has_nearest_station", "has_any_weather"]].sum().reset_index()
+        tot = w[["rows", "has_any_weather"]].sum()
+        print(f"\n**Rows with at least one weather covariate set:** {int(tot.has_any_weather):,} of {int(tot.rows):,} "
+              f"({tot.has_any_weather / tot.rows:.1%})")
         print("\n**Weather covariate coverage (rows):**\n")
         print(md(w))
     except FileNotFoundError:

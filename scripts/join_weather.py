@@ -30,6 +30,7 @@ from common import BY_SOURCE, NORM, RAW
 from sites import site_key
 
 OUT = NORM / "weather_join.parquet"
+MAX_ROWS_PER_FILE = 600_000
 POWER_RAW = RAW / "nasa_power"
 POWER_DERIVED = POWER_RAW / "derived"
 GM_RAW = RAW / "gridmet" / "extracted"
@@ -41,11 +42,12 @@ def es_kpa(t_c):
 
 
 def add_precip_features(df: pd.DataFrame, key: str, pcol: str, prefix: str) -> pd.DataFrame:
-    df = df.sort_values([key, "date"])
+    df = df.sort_values([key, "date"]).reset_index(drop=True)
     g = df.groupby(key, sort=False)[pcol]
     df[f"{prefix}precip_1d_mm"] = df[pcol]
     for n in (3, 7, 14, 30):
-        df[f"{prefix}precip_{n}d_mm"] = g.transform(lambda s: s.rolling(n, min_periods=n).sum())
+        # vectorized grouped rolling sum (rows are sorted by key then date)
+        df[f"{prefix}precip_{n}d_mm"] = g.rolling(n, min_periods=n).sum().reset_index(level=0, drop=True).values
     wet = (df[pcol] >= 1.0)
     # days since last wet day (0 = rained >= 1 mm that day)
     grp = wet.groupby(df[key]).cumsum()
@@ -118,10 +120,28 @@ def gm_cell(lat, lon) -> pd.Series:
     return pd.Series(r.astype(str)) + "_" + pd.Series(c.astype(str))
 
 
+def GM_TOPUP_FILES(y):
+    """Top-up extracts (fetch_gridmet.py --topup) for year y; their mtimes invalidate the cache."""
+    return [Path(q) for q in glob.glob(str(RAW / "gridmet" / "extracted_*" / f"*_{y}.parquet"))]
+
+
+_CELL_OF: dict = {}
+
+
+def _key_to_cell(keys) -> dict:
+    """site_key 'lat,lon' -> gridMET cell, computed once per unique key."""
+    new = [k for k in keys if k not in _CELL_OF]
+    if new:
+        ll = pd.Series(new).str.split(",", expand=True).astype(float)
+        _CELL_OF.update(zip(new, gm_cell(ll[0], ll[1]).values))
+    return _CELL_OF
+
+
 def gridmet_year(y: int) -> pd.DataFrame | None:
     out = GM_DERIVED / f"{y}.parquet"
     need = [GM_RAW / f"{v}_{y}.parquet" for v in GM_VARS]
     prev = [GM_RAW / f"{v}_{y - 1}.parquet" for v in GM_VARS]
+    need += [p for p in GM_TOPUP_FILES(y)]
     prev_ok = y <= 1979 or all(p.exists() for p in prev)
     if (out.exists() and prev_ok
             and all(p.exists() and p.stat().st_mtime < out.stat().st_mtime for p in need + (prev if y > 1979 else []))):
@@ -136,9 +156,9 @@ def gridmet_year(y: int) -> pd.DataFrame | None:
             if not p.exists():
                 cols = None
                 break
-            d = pd.read_parquet(p).rename(columns={v: name})
-            ll = d["site_key"].str.split(",", expand=True).astype(float)
-            d["gm_cell"] = gm_cell(ll[0], ll[1]).values
+            extra = [q for q in glob.glob(str(RAW / "gridmet" / "extracted_*" / f"{v}_{yy}.parquet"))]
+            d = pd.concat([pd.read_parquet(q) for q in [p, *extra]], ignore_index=True).rename(columns={v: name})
+            d["gm_cell"] = d["site_key"].map(_key_to_cell(d["site_key"].unique()))
             d[name] = d[name].astype("float32")
             d = d.drop(columns="site_key").drop_duplicates(["gm_cell", "date"]).set_index(["gm_cell", "date"])[name]
             cols = [d] if cols is None else cols + [d]
@@ -244,6 +264,9 @@ def main():
             for cache in (pw_cache, gm_cache, ns_cache):
                 for k in [k for k in cache if k != y]:
                     cache.pop(k)
+        undated = o[o["date"].isna()]
+        if len(undated):  # no daily weather possible; keep the rows for static covariates
+            res.append(undated)
         w = pd.concat(res, ignore_index=True)
         sc = source_covariates(sid, part)
         if sc is not None:
@@ -255,9 +278,16 @@ def main():
         w["has_gridmet"] = w["gm_tmax_c"].notna() if "gm_tmax_c" in w else False
         w["has_source_weather"] = w.filter(regex="^src_(obs_temp_c|tmean_c)$").notna().any(axis=1)
         w["has_nearest_station"] = w["ns_tmax_c"].notna() | w["ns_precip_1d_mm"].notna() if "ns_tmax_c" in w else False
-        w.to_parquet(OUT / f"{name}.parquet", index=False, compression="zstd")
+        w["has_any_weather"] = w[["has_power", "has_gridmet", "has_source_weather", "has_nearest_station"]].any(axis=1)
+        # keep every file well under GitHub's 100 MB limit
+        if len(w) > MAX_ROWS_PER_FILE:
+            for i, st in enumerate(range(0, len(w), MAX_ROWS_PER_FILE)):
+                w.iloc[st:st + MAX_ROWS_PER_FILE].to_parquet(OUT / f"{name}-p{i}.parquet", index=False, compression="zstd")
+        else:
+            w.to_parquet(OUT / f"{name}.parquet", index=False, compression="zstd")
         stats.append((name, len(w), int(w["has_power"].sum()), int(np.sum(w["has_gridmet"])),
-                      int(w["has_source_weather"].sum()), int(np.sum(w["has_nearest_station"]))))
+                      int(w["has_source_weather"].sum()), int(np.sum(w["has_nearest_station"])),
+                      int(w["has_any_weather"].sum())))
         # bound memory: keep only a couple of years cached
         if len(gm_cache) > 3:
             for k in sorted(gm_cache)[:-3]:
@@ -269,7 +299,7 @@ def main():
             for k in sorted(ns_cache)[:-6]:
                 ns_cache.pop(k)
     st = pd.DataFrame(stats, columns=["file", "rows", "has_power", "has_gridmet", "has_source_weather",
-                                      "has_nearest_station"])
+                                      "has_nearest_station", "has_any_weather"])
     st.to_csv(NORM / "weather_join_coverage.csv", index=False)
     print(st.to_string())
 
