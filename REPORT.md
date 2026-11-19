@@ -35,5 +35,41 @@ paired with weather. Layout and rules follow the project brief (normalized Parqu
 Workarounds in use: MADIS public archive in place of Synoptic for measured RAWS fuel sticks;
 NASA POWER + gridMET in place of ERA5-Land until a CDS key is provided.
 
-## 2. Progress log
-(see entries below, newest last)
+## 2. Progress log (newest last)
+
+### 2026-11-19 — Tier 1 pipeline proven
+- **Globe-LFMC 2.0** (CC0): 293,796 LFMC rows, 15 countries, with ERA5-derived covariates kept as
+  `src_*`. The personal-contact sheet in the source xlsx is never read.
+- **NFMD via FEMS**: the public sample download works when `filterByCategory=All` (an empty value
+  silently returns nothing). 382,778 samples 1977–2026 (287k live, 96k dead: 1/10/100/1000-hr,
+  duff, litter). FEMS stores dates as local midnight in US Central time (05/06Z) — handled.
+- **RAWS fuel sticks via NOAA MADIS** (public archive, no token): hourly netCDF streamed and reduced
+  to fuel-moisture stations + co-located weather; sampled at 12 and 21 UTC. 13.6M readings so far
+  (2017–2026 complete; 2001–2016 back-filling, newest first). Synoptic not used (token missing and
+  its free tier forbids commercial use).
+- **De-duplication**: Globe-LFMC renames species (Latin vs NFMD common names), so matching is
+  one-to-one on location (~1 km), date, fuel class and value (±1 pt or 1 %), most original source
+  kept. 226,578 Globe US rows → NFMD, 19,600 → ONF (matched on the INRA site means ONF rows carry),
+  9,380 → Catalonia. Links in `data/normalized/duplicates.parquet`.
+- **QA** (`scripts/qa.py`): flags only, nothing dropped. Organic fuels (duff/peat/moss/litter) get
+  their own thresholds after real UK duff values >250 % were being flagged as implausible.
+
+### 2026-11-19 — Tier 2/3 ingestion (4 discovery + 3 ingestion subagents)
+- Discovery: 699 papers reviewed (`papers.csv`), 206 data leads (`leads.csv`), 15 Africa data
+  requests (`requests_africa.csv`).
+- Europe: ONF Réseau Hydrique (103,293 replicate rows), SPIF Catalonia (9,541), UK national FMC
+  (8,064) + 3 further UK sets, ADAI Lousã (1,018), Saxony destructive + 10-h stick sensors (31,437).
+- North America: CFS test-fire FMC 1931–61 (136,246; ~56k are indicator measurements, flagged),
+  USFS Hawaii DFM (12,454), BC fire-skips (6,317), Southern Great Plains pyric herbivory (3,146),
+  WFSI DoD burns (1,165), 10 more USFS RDS datasets, 2 figshare foliar sets.
+- Africa / Australia / S. America: Kruger EBP plot fires (1,589, **undated** in the source),
+  Nolan SE-Australia DFMC (3,148), Hobart (355), Cumberland CS505 (363), Annaburroo (3),
+  Chaco curing (105, curing % only — no moisture).
+
+### 2026-11-19 — Weather join
+Every observation gets, where available: source-provided weather (`src_*`), NASA POWER daily
+(`pw_*`, global, 1981+), gridMET (`gm_*`, CONUS, 1979+, incl. fm100/fm1000), nearest station
+(`ns_*`: RAWS ≤40 km & ≤600 m elevation difference, else GHCN-Daily ≤75 km; distance and elevation
+difference recorded), terrain (Copernicus GLO-30: elevation, slope, aspect) and ESA WorldCover.
+Rolling precipitation 3/7/14/30-day, days since rain and VPD are derived for every weather set.
+ERA5-Land is **not** attached yet (CDS key needed).
