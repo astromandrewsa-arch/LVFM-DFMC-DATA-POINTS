@@ -10,3 +10,8 @@ __pycache__/
 *.grib
 *.tif
 .cache/
+
+# NFDRS model outputs (~1 GB, 160M rows): reproducible with
+# scripts/fetch_fems_nfdrs.py + scripts/normalize_fems_nfdrs.py + build_observations.py
+data/normalized/estimates_by_source/fems_nfdrs/
+data/normalized/remote_sensing_estimates.parquet/fems_nfdrs-*.parquet

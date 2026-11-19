@@ -13,10 +13,9 @@ SOURCE_ID = "fems_nfdrs"
 COLS = {"1HrFM": ("dead", "1hr"), "10HrFM": ("dead", "10hr"), "100HrFM": ("dead", "100hr"),
         "1000HrFM": ("dead", "1000hr"), "HerbFM": ("live", "herb"), "WoodyFM": ("live", "shrub")}
 
-if __name__ == "__main__":
-    st = pd.read_csv(RAW / "fems_raws_daily" / "stations.csv").set_index("station_id")
+def run_chunk(files, st, chunk_no):
     parts = []
-    for f in glob.glob(str(RAW / SOURCE_ID / "daily" / "*.csv")):
+    for f in files:
         try:
             d = pd.read_csv(f)
         except Exception:
@@ -27,6 +26,8 @@ if __name__ == "__main__":
         long = d.melt(id_vars=["StationName", "ObservationTime", "StationId", "NFDRType"],
                       value_vars=list(COLS), var_name="var", value_name="moisture_pct").dropna(subset=["moisture_pct"])
         parts.append(long)
+    if not parts:
+        return
     df = pd.concat(parts, ignore_index=True)
     sid = df["StationId"].astype(int)
     df["fuel_class"] = df["var"].map(lambda v: COLS[v][0])
@@ -46,4 +47,11 @@ if __name__ == "__main__":
     out["observation_id"] = [make_obs_id(SOURCE_ID, r) for r in out["source_record_id"]]
     out["year"] = out["date"].dt.year
     for y, g in out.groupby("year"):
-        finalize(g.drop(columns="year"), SOURCE_ID, estimates=True, part=str(int(y)))
+        finalize(g.drop(columns="year"), SOURCE_ID, estimates=True, part=f"{int(y)}_{chunk_no:03d}")
+
+
+if __name__ == "__main__":
+    st = pd.read_csv(RAW / "fems_raws_daily" / "stations.csv").set_index("station_id")
+    files = sorted(glob.glob(str(RAW / SOURCE_ID / "daily" / "*.csv")))
+    for i in range(0, len(files), 150):
+        run_chunk(files[i:i + 150], st, i // 150)
